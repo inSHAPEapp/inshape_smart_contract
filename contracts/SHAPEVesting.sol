@@ -35,7 +35,6 @@ contract SHAPEVesting is Initializable, OwnableUpgradeable {
     mapping (uint8 => Vesting) public reserves;
     mapping (address => Vesting[]) public vestingSchedules;
 
-    ERC20Upgradeable private _oldShapeToken;
     SHAPEToken private _shapeToken;
     ERC20Upgradeable private _USDT;
     ERC20Upgradeable private _BUSD;
@@ -43,7 +42,6 @@ contract SHAPEVesting is Initializable, OwnableUpgradeable {
 
     function initialize(
         address ownerAddress,
-        address oldTokenAddr,
         address tokenAddr,
         address usdt,
         address busd,
@@ -51,7 +49,6 @@ contract SHAPEVesting is Initializable, OwnableUpgradeable {
     ) external initializer {
         __Ownable_init();
 
-        _oldShapeToken = ERC20Upgradeable(oldTokenAddr);
         _shapeToken = SHAPEToken(tokenAddr);
         _USDT = ERC20Upgradeable(usdt);
         _BUSD = ERC20Upgradeable(busd);
@@ -77,11 +74,6 @@ contract SHAPEVesting is Initializable, OwnableUpgradeable {
 
     function setVestingStart(uint256 date) public onlyOwner {
         vestingStart = date;
-    }
-
-    function claimNewShape(uint256 amount) public {
-        _oldShapeToken.safeTransferFrom(msg.sender, address(this), amount);
-        vestingSchedules[msg.sender].push(Vesting(lock, vesting, amount, 0));
     }
 
     function buyShapeBUSD(uint256 amount) public {
@@ -134,6 +126,11 @@ contract SHAPEVesting is Initializable, OwnableUpgradeable {
     }
 
     function withdrawFromReserve(uint8 type_, uint256 amount) public onlyOwner validReserveType(type_) {
+        require(
+            reserves[type_].claimed < reserves[type_].initialAmount,
+            "All tokens have been already claimed from this reserve."
+        );
+
         uint256 tgeWithdrawable = _getTgeWithdrawable(type_);
 
         uint256 vestedMonths = _getVestedMonthsForReserve(type_);
@@ -155,6 +152,12 @@ contract SHAPEVesting is Initializable, OwnableUpgradeable {
         require(index < vestingSchedules[msg.sender].length, "No schedule at that index.");
 
         Vesting storage schedule = vestingSchedules[msg.sender][index];
+
+        require(
+            schedule.claimed < schedule.initialAmount,
+            "All tokens have been already claimed from this vesting schedule."
+        );
+
         uint256 claimable = 0;
 
         if (schedule.vesting == 0) {
@@ -206,9 +209,9 @@ contract SHAPEVesting is Initializable, OwnableUpgradeable {
 
     function _fixPrice(uint256 amount, ERC20Upgradeable otherToken) private view returns (uint256) {
         if (PRICE_DECIMALS >= otherToken.decimals()) {
-            return (amount * price / PRICE_DECIMALS) / (10 ** (PRICE_DECIMALS - otherToken.decimals()));
+            return (amount * price / (10 ** PRICE_DECIMALS)) / (10 ** (PRICE_DECIMALS - otherToken.decimals()));
         } else {
-            return (amount * price / PRICE_DECIMALS) * (10 ** (otherToken.decimals() - PRICE_DECIMALS));
+            return (amount * price / (10 ** PRICE_DECIMALS)) * (10 ** (otherToken.decimals() - PRICE_DECIMALS));
         }
     }
 

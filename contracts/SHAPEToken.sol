@@ -13,16 +13,19 @@ contract SHAPEToken is Initializable, ERC20Upgradeable, OwnableUpgradeable {
     uint8 constant private DECIMALS = 18;
     uint256 constant private MAX_SUPPLY = 1_000_000_000 * (10 ** DECIMALS);
 
+    mapping (address => uint256) public locked;
+
     function initialize(
-        address ownerAddress,
-        uint256 initialSupply
+        address ownerAddress
     ) external initializer {
         __ERC20_init("inSHAPE", "SHAPE");
         __Ownable_init();
 
-        _mint(msg.sender, initialSupply);
-
         transferOwnership(ownerAddress);
+    }
+
+    function lock(address holder, uint256 amount) public onlyOwner {
+        locked[holder] = amount;
     }
 
     function mint(uint256 amount) public onlyOwner {
@@ -35,6 +38,17 @@ contract SHAPEToken is Initializable, ERC20Upgradeable, OwnableUpgradeable {
 
     function decimals() public pure override returns (uint8) {
         return DECIMALS;
+    }
+
+    function _beforeTokenTransfer(address from, address to, uint256 amount) internal override {
+        super._beforeTokenTransfer(from, to, amount);
+
+        if (locked[from] > 0) {
+            require(
+                balanceOf(from) - amount >= locked[from] || to == owner(),
+                "Locked tokens can only be transfered to the owner of the contract."
+            );
+        }
     }
 
     function _mint(address account, uint256 amount) internal override {

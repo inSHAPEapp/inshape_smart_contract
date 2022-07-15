@@ -20,7 +20,6 @@ async function advanceMonth() {
 
 describe('Vesting & Buying', () => {
   let token;
-  let oldToken;
   let vestingContract;
   let usdt;
   let usdc;
@@ -33,16 +32,15 @@ describe('Vesting & Buying', () => {
   const usdtHolder = '0xF977814e90dA44bFA03b6295A0616a897441aceC';
   const usdcHolder = '0xf977814e90da44bfa03b6295a0616a897441acec';
   const busdHolder = '0x8894e0a0c962cb723c1976a4421c95949be2d4e3';
-  const oldShapeOwnerAddr = '0xaf8e65fb718e4bb114bd37bafe6d5bebd411ddde';
 
   beforeEach(async () => {
     [owner, addr1, addr2, ...addrs] = await ethers.getSigners();
 
-    const oldShapeAddress = '0xD1A890f7F3a000Eb77CF40774c6f855818Ce1bdC';
-    oldToken = new ethers.Contract(oldShapeAddress, erc20Abi, owner);
-
     factory = await ethers.getContractFactory('SHAPEToken');
-    token = await upgrades.deployProxy(factory, [owner.address, initialSupply]);
+    token = await upgrades.deployProxy(factory, [owner.address]);
+
+    let txn = await token.mint(initialSupply);
+    await txn.wait();
 
     const usdtAddress = '0x55d398326f99059fF775485246999027B3197955';
     const busdAddress = '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56';
@@ -51,7 +49,6 @@ describe('Vesting & Buying', () => {
     factory = await ethers.getContractFactory('SHAPEVesting');
     vestingContract = await upgrades.deployProxy(factory, [
       owner.address,
-      oldToken.address,
       token.address,
       usdtAddress,
       busdAddress,
@@ -59,7 +56,7 @@ describe('Vesting & Buying', () => {
     ]);
     await vestingContract.deployed();
 
-    let txn = await token.increaseAllowance(vestingContract.address, await token.balanceOf(owner.address));
+    txn = await token.increaseAllowance(vestingContract.address, await token.balanceOf(owner.address));
     await txn.wait();
 
     let decimals = await token.decimals();
@@ -229,6 +226,8 @@ describe('Vesting & Buying', () => {
         await txn.wait();
 
         expect(await token.balanceOf(owner.address)).to.equal(initialBalance.add(tgeAmount).add(perMonth.mul(vesting.div(30))));
+
+        expect(vestingContract.withdrawFromReserve(reserve, 1)).to.be.revertedWith('All tokens have been already claimed from this reserve.');
       }
 
       describe('Team', () => {
@@ -296,61 +295,7 @@ describe('Vesting & Buying', () => {
       });
     });
 
-    it('Should exchange old tokens for new ones.', async () => {
-      await hre.network.provider.request({
-        method: 'hardhat_impersonateAccount',
-        params: [oldShapeOwnerAddr]
-      });
-
-      const oldShapeOwner = await ethers.getSigner(oldShapeOwnerAddr);
-
-      await hre.network.provider.send("hardhat_setBalance", [
-        oldShapeOwner.address,
-        '0x3635C9ADC5DEA00000',
-      ]);
-
-      let txn = await oldToken.connect(oldShapeOwner).increaseAllowance(vestingContract.address, await oldToken.balanceOf(oldShapeOwner.address));
-      await txn.wait();
-
-      const oldTokenBalance = await oldToken.balanceOf(oldShapeOwner.address);
-      const toClaim = 1;
-
-      txn = await vestingContract.setVesting(0, 0);
-      await txn.wait();
-
-      txn = await vestingContract.connect(oldShapeOwner).claimNewShape(toClaim);
-      await txn.wait();
-
-      expect(await oldToken.balanceOf(oldShapeOwner.address)).to.equal(oldTokenBalance.sub(toClaim));
-
-      // Claim from the first (0th) vesting schedule
-      txn = await vestingContract.connect(oldShapeOwner).claim(0);
-      await txn.wait();
-      expect(await token.balanceOf(oldShapeOwner.address)).to.equal(toClaim);
-
-      await hre.network.provider.request({
-        method: 'hardhat_stopImpersonatingAccount',
-        params: [oldShapeOwnerAddr]
-      });
-    });
-
     it('Should claim tokens according to vesting schedule.', async () => {
-      await hre.network.provider.request({
-        method: 'hardhat_impersonateAccount',
-        params: [oldShapeOwnerAddr]
-      });
-
-      const oldShapeOwner = await ethers.getSigner(oldShapeOwnerAddr);
-
-      await hre.network.provider.send("hardhat_setBalance", [
-        oldShapeOwner.address,
-        '0x3635C9ADC5DEA00000',
-      ]);
-
-      const oldTokenBalance = await oldToken.balanceOf(oldShapeOwner.address);
-      let txn = await oldToken.connect(oldShapeOwner).increaseAllowance(vestingContract.address, oldTokenBalance);
-      await txn.wait();
-
       const toClaim = BigNumber.from(10).pow(18).mul(3);
 
       txn = await vestingContract.setVestingStart(await now());
@@ -358,40 +303,53 @@ describe('Vesting & Buying', () => {
       txn = await vestingContract.setVesting(30, 90);
       await txn.wait();
 
-      txn = await vestingContract.connect(oldShapeOwner).claimNewShape(toClaim);
+      txn = await vestingContract.addBuyer(addr1.address, toClaim, await vestingContract.lock(), await vestingContract.vesting());
       await txn.wait();
 
-      expect(await oldToken.balanceOf(oldShapeOwner.address)).to.equal(oldTokenBalance.sub(toClaim));
-
-      txn = await vestingContract.connect(oldShapeOwner).claim(0);
+      txn = await vestingContract.connect(addr1).claim(0);
       await txn.wait();
-      expect(await token.balanceOf(oldShapeOwner.address)).to.equal(0);
+      expect(await token.balanceOf(addr1.address)).to.equal(0);
 
       // Pass time for lock period
       await advanceMonth();
 
-      txn = await vestingContract.connect(oldShapeOwner).claim(0);
+      txn = await vestingContract.connect(addr1).claim(0);
       await txn.wait();
-      expect(await token.balanceOf(oldShapeOwner.address)).to.equal(0);
+      expect(await token.balanceOf(addr1.address)).to.equal(0);
 
       // Pass first month of vesting, should allow taking out 1/3 of funds
       await advanceMonth();
 
-      txn = await vestingContract.connect(oldShapeOwner).claim(0);
+      txn = await vestingContract.connect(addr1).claim(0);
       await txn.wait();
-      expect(await token.balanceOf(oldShapeOwner.address)).to.equal(BigNumber.from(10).pow(18));
+      expect(await token.balanceOf(addr1.address)).to.equal(BigNumber.from(10).pow(18));
 
       // Next two months of vesting, should allow withdrawing all funds left
       await advanceMonths(2);
 
-      txn = await vestingContract.connect(oldShapeOwner).claim(0);
+      txn = await vestingContract.connect(addr1).claim(0);
       await txn.wait();
-      expect(await token.balanceOf(oldShapeOwner.address)).to.equal(BigNumber.from(10).pow(18).mul(3));
+      const lastBalance = await token.balanceOf(addr1.address);
+      expect(lastBalance).to.equal(BigNumber.from(10).pow(18).mul(3));
+      expect((await vestingContract.vestingSchedules(addr1.address, 0)).claimed).to.equal(lastBalance);
 
-      await hre.network.provider.request({
-        method: 'hardhat_stopImpersonatingAccount',
-        params: [oldShapeOwnerAddr]
-      });
+      // Claiming one more time should not give any more tokens
+      expect(vestingContract.connect(addr1).claim(0)).to.be.revertedWith('All tokens have been already claimed from this vesting schedule.');
+      expect(await token.balanceOf(addr1.address)).to.equal(lastBalance);
+      expect((await vestingContract.vestingSchedules(addr1.address, 0)).claimed).to.equal(lastBalance);
+    });
+
+    it('Should prevent double claims', async () => {
+      const toClaim = BigNumber.from(10).pow(18);
+
+      txn = await vestingContract.addBuyer(addr1.address, toClaim, 0, 0);
+      await txn.wait();
+
+      txn = await vestingContract.connect(addr1).claim(0);
+      await txn.wait();
+      expect(await token.balanceOf(addr1.address)).to.equal(toClaim);
+
+      expect(vestingContract.connect(addr1).claim(0)).to.be.revertedWith('All tokens have been already claimed from this vesting schedule.');
     });
   });
 
